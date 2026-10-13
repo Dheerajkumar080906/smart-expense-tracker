@@ -2,7 +2,16 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './style.css'
 
-const API = 'http://localhost:8080/api'
+const getApiBaseUrl = () => {
+  const envUrl = import.meta.env.VITE_API_URL
+  if (envUrl && envUrl.trim() !== '') {
+    const trimmed = envUrl.trim().replace(/\/+$/, '')
+    return trimmed.endsWith('/api') ? trimmed : `${trimmed}/api`
+  }
+  return import.meta.env.DEV ? 'http://localhost:8080/api' : '/api'
+}
+
+const API = getApiBaseUrl()
 const money = n => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Number(n || 0))
 const today = new Date().toISOString().slice(0, 10)
 
@@ -36,7 +45,7 @@ function App() {
         request('/dashboard'), request('/transactions'), request('/budgets'), request('/goals')
       ])
       setDashboard(d); setTransactions(t); setBudgets(b); setGoals(g); setError('')
-    } catch (e) { setError(`${e.message}. Make sure the Spring Boot backend is running on port 8080.`) }
+    } catch (e) { setError(`${e.message}. Unable to reach the backend API at ${API}.`) }
   }
   useEffect(() => { refresh() }, [])
 

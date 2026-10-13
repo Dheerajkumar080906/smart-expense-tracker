@@ -2,6 +2,7 @@ package com.example.expense;
 
 import java.math.BigDecimal;
 import java.sql.Date;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.List;
@@ -13,10 +14,18 @@ import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = "http://localhost:5173")
 public class ExpenseController {
     private final JdbcTemplate jdbc;
     public ExpenseController(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    @GetMapping("/health")
+    public Map<String,Object> health() {
+        return Map.of(
+            "status", "UP",
+            "timestamp", Instant.now().toString(),
+            "service", "smart-expense-tracker-backend"
+        );
+    }
 
     @GetMapping("/transactions")
     public List<Map<String,Object>> transactions() {
@@ -61,7 +70,12 @@ public class ExpenseController {
     public Map<String,Object> saveBudget(@RequestBody BudgetRequest r) {
         if (r.category == null || r.category.isBlank() || r.monthlyLimit == null || r.monthlyLimit.signum() <= 0)
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Category and positive monthly limit are required.");
-        jdbc.update("MERGE INTO budgets(category,monthly_limit) KEY(category) VALUES (?,?)", r.category.trim(), r.monthlyLimit);
+        
+        // Standard SQL upsert compatible with H2, PostgreSQL, MySQL, etc.
+        int updated = jdbc.update("UPDATE budgets SET monthly_limit=? WHERE category=?", r.monthlyLimit, r.category.trim());
+        if (updated == 0) {
+            jdbc.update("INSERT INTO budgets(category,monthly_limit) VALUES (?,?)", r.category.trim(), r.monthlyLimit);
+        }
         return jdbc.queryForMap("SELECT id,category,monthly_limit AS monthlyLimit FROM budgets WHERE category=?", r.category.trim());
     }
 
@@ -112,14 +126,51 @@ public class ExpenseController {
             Date.valueOf(start), Date.valueOf(end));
         List<Map<String,Object>> budgetRows = budgets();
         for (Map<String,Object> budget : budgetRows) {
+            Object bCategoryObj = budget.get("category");
+            if (bCategoryObj == null) bCategoryObj = budget.get("CATEGORY");
+            String bCategory = bCategoryObj != null ? bCategoryObj.toString() : "";
+
             BigDecimal spent = categorySpend.stream()
-                .filter(row -> row.get("CATEGORY").equals(budget.get("CATEGORY")))
-                .map(row -> (BigDecimal) row.get("SPENT")).findFirst().orElse(BigDecimal.ZERO);
+                .filter(row -> {
+                    Object rCategoryObj = row.get("category");
+                    if (rCategoryObj == null) rCategoryObj = row.get("CATEGORY");
+                    String rCategory = rCategoryObj != null ? rCategoryObj.toString() : "";
+                    return bCategory.equalsIgnoreCase(rCategory);
+                })
+                .map(row -> {
+                    Object s = row.get("spent");
+                    if (s == null) s = row.get("SPENT");
+                    return toBigDecimal(s);
+                })
+                .findFirst()
+                .orElse(BigDecimal.ZERO);
+
+            Object limitObj = budget.get("monthlyLimit");
+            if (limitObj == null) limitObj = budget.get("MONTHLYLIMIT");
+            BigDecimal limit = toBigDecimal(limitObj);
+
             budget.put("spent", spent);
-            budget.put("overBudget", spent.compareTo((BigDecimal) budget.get("MONTHLYLIMIT")) > 0);
+            budget.put("overBudget", spent.compareTo(limit) > 0);
         }
-        return Map.of("month", start.substring(0,7), "income", income, "expenses", expenses,
-            "balance", income.subtract(expenses), "categorySpend", categorySpend, "budgets", budgetRows);
+        return Map.of(
+            "month", start.substring(0,7),
+            "income", income != null ? income : BigDecimal.ZERO,
+            "expenses", expenses != null ? expenses : BigDecimal.ZERO,
+            "balance", (income != null ? income : BigDecimal.ZERO).subtract(expenses != null ? expenses : BigDecimal.ZERO),
+            "categorySpend", categorySpend,
+            "budgets", budgetRows
+        );
+    }
+
+    private BigDecimal toBigDecimal(Object value) {
+        if (value == null) return BigDecimal.ZERO;
+        if (value instanceof BigDecimal bd) return bd;
+        if (value instanceof Number n) return new BigDecimal(n.toString());
+        try {
+            return new BigDecimal(value.toString());
+        } catch (Exception e) {
+            return BigDecimal.ZERO;
+        }
     }
 
     public static class TxnRequest {

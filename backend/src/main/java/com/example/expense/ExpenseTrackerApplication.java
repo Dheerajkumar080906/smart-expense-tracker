@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Bean;
 @SpringBootApplication
 public class ExpenseTrackerApplication {
     public static void main(String[] args) {
+        new java.io.File("./data").mkdirs();
         SpringApplication.run(ExpenseTrackerApplication.class, args);
     }
 
